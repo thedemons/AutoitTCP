@@ -1,4 +1,5 @@
 #include <ScreenCapture.au3>
+#include <GDIPlus.au3>
 #include "TCP.au3"
 
 ; connect to server
@@ -11,8 +12,8 @@ If $Client = False Then
 	Exit
 EndIf
 
-$guiW = Round( @DesktopWidth / 3 )
-$guiH = Round( @DesktopHeight / 3 )
+$guiW = Round( @DesktopWidth / 4 )
+$guiH = Round( @DesktopHeight / 4 )
 
 GUICreate("Client", $guiW, $guiH)
 $Pic = GUICtrlCreatePic("", 0, 0, $guiW, $guiH)
@@ -24,7 +25,10 @@ $File = "capture.jpg"
 While 1
 
 	; capture screen
-	_ScreenCapture_Capture($File)
+	$hHBmp = _ScreenCapture_Capture($File)
+
+	$hHBmp = _GDIPlus_ImageResize($hHBmp, $guiW, $guiH)
+	_GDIPlus_ImageSaveToFile($hHBmp, $File)
 
 	GUICtrlSetImage($Pic, $File)
 

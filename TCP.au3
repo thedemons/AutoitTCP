@@ -14,7 +14,7 @@ Global $c_TYPE_FILE = "FILE"
 
 Global $C_DIR_DATA = @ScriptDir & "\data"
 
-Global $C_TRANSFER_SPLIT = 10000000
+Global $C_TRANSFER_SPLIT = 100000000
 Global $C_TRANSFER_CONTINUE = "\{CONTINUE}"
 Global $C_TRANSFER_END = "\{END}"
 

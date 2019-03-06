@@ -11,4 +11,20 @@ If $Client = False Then
 	Exit
 EndIf
 
-$Client.send("Hello World")
+
+GUICreate("SERVER", 200, 200)
+$btn = GUICtrlCreateButton("Send", 10, 10, 180, 180)
+GUISetState()
+
+While 1
+	Switch GUIGetMsg()
+		Case -3
+
+			Exit
+		Case $btn
+
+			Local $msg[2] = ["Send an Array", "through TCP"]
+			$Client.sendWait("Hello World")
+			$Client.sendWait($msg)
+	EndSwitch
+WEnd

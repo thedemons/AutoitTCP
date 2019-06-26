@@ -1,500 +1,411 @@
 #include-once
-#include <WinAPI.au3>
-#include <File.au3>
-#include "AutoitObject_Internal.au3"
+#include <Array.au3>
+#include "AutoItObject.au3"
 
-; all server and client created, to close socket at exiting
-Global $__SOCKET[0]
-Global $c_DAT_VERIFY = "\{VERIFY}"
-Global $c_DAT_WAITING = "\{WAITING}"
-Global $c_DAT_FILE = "\{FILE}"
-Global $c_TYPE_TXT = "TXT"
-Global $c_TYPE_IMG = "IMG"
-Global $c_TYPE_FILE = "FILE"
+; no documents
+Global Const $iHeadLen = 16
 
-Global $C_DIR_DATA = @ScriptDir & "\data"
-
-Global $C_TRANSFER_SPLIT = 100000000
-Global $C_TRANSFER_CONTINUE = "\{CONTINUE}"
-Global $C_TRANSFER_END = "\{END}"
-
-If Not FileExists($C_DIR_DATA) Then DirCreate($C_DIR_DATA)
-
-
-OnAutoItExitRegister("CloseTCP")
 TCPStartup()
-__ClearConsole()
+_AutoItObject_Startup()
 
-print("---------------------------")
-print("> TCP starting up")
+#cs
 
-Func Server($ip, $port)
+	< External function >
+		For Server
+			_TCPServer
+			_TCPServerAccept
+			_TCPServerGetDisconnect
+			_TCPServerRecv
+			_TCPServerSend
+			_TCPRecv
+			_TCPSend
 
-	Local $Server = IDispatch()
-	$Server.ip = $ip
-	$Server.port = $port
-	$Server.maxLen = 10000000000
-	$Server.listDis = False
-	$Server.timeOut = 10000 ; 10s
-	$Server.listen = TCPListen($ip, $port)
+		For Client
+			_TCPClient
+			_TCPRecv
+			_TCPSend
 
-	If @error Then Return print("!	ERROR >	Cannot create listen socket")
+	< Internal usage only >
+			_TCPEncode
+			_TCPDecode
+			_TCPArrayToData
+			_TCPDataToArray
+#ce
 
-	print("-	Server started > ip = " & $ip & "; port = " & $port)
+#cs
+	_TCPServer($ip, $port = 80, $maxConn = 10000)
+		Usage:
+			To open a TCP Server
 
-	Local $aClients[0]
-	$Server.clients = $aClients
-	$Server.__defineGetter("accept", TCP_Server_Accept)
-	$Server.__defineGetter("recv", TCP_Server_Recv)
-	$Server.__defineGetter("send", TCP_Server_Send)
-	$Server.__defineGetter("getDisconnect", TCP_Server_GetDisconnect)
-	__AllSocketAppend($Server.listen)
+		Parameters:
+			$ip: The IP address to open TCP server
+			$port: Custom port, can be any number, the client connected to this ip must have the same port opened
+			$maxConn: Max number of clients can be connected to this serever
+
+		Return value:
+			Success:
+				The handle to a server, this is an object that contain:
+
+					+ $Server.ClientCount	= return the number of clients
+					+ $Server.clients		= an array contains all clients connected, in object type
+
+					+ $Server.ip		= the ip of this server
+					+ $Server.port		= the port of this server
+					+ $Server.maxconn	= $maxConn
+					+ $Server.iCursor	= internal use only, don't alter this please!
+			Error:
+				-1, and set the @error to non-zero, look for TCPListen in the help file to learn more
+#ce
+
+Func _TCPServer($ip, $port = 80, $maxConn = 10000)
+
+	Local $listen = TCPListen($ip, $port, $maxConn)
+	Local $err = @error
+	If $err Then Return SetError($err, 0, -1)
+
+	Local $Server = IDispatch(), $clients[0]
+
+	$Server.__add('ip', $ip)
+	$Server.__add('port', $port)
+	$Server.__add('maxConn', $maxConn)
+	$Server.__add('clients', $clients)
+	$Server.__add('iCursor', 0)
+	$Server.__add('ClientCount', 0)
+	$Server.__add('clientdisconnected', 0)
+	$Server.__add('listen', $listen)
+
+	$Server.__method('GetDisconnect', '_TCPServerGetDisconnect')
+	$Server.__method('accept', '_TCPServerAccept')
+	$Server.__method('recv', '_TCPServerRecv')
+	$Server.__method('send', '_TCPServerSend')
 
 	Return $Server
 EndFunc
 
-Func TCP_Server_GetDisconnect($this)
+#cs
+	_TCPServerAccept($Server)
+		Usage:
+			To accept new client's connection
 
-	Local $Server = $this.parent
-	$Disconect = $Server.listDis
-	$Server.listDis = False
+		Parameters:
+			$Server: Handle to a server, return by _TCPServer() function
 
-	Return $Disconect
+		Return value:
+			An object that contain client connected information
+				+ $client.socket => client's socket
+				+ $client.info 	 => can be an array, contain client name, ip address, etc,.. this is upon your choice when using TCPClient() function, which info to send
+				+ $client.msg 	 => this is only matter when you use _TCPServerRecv()
+			For example:
+				$client = _TCPServerAccept($server)
+				If IsObj($client) Then ... (handle the client login here)
+#ce
+
+Func _TCPServerAccept($Server)
+
+	Local $socket = TCPAccept($Server.listen)
+
+	If $socket = -1 Then Return 0
+
+	; get info from client
+	Local $info = _TCPRecv($socket)
+
+	If $info = False Then
+		TCPCloseSocket($socket)
+		Return 0
+	EndIf
+
+	; add client
+	Local $clients = $Server.clients
+	Local $client = IDispatch()
+	$client.__add("msg", "")
+	$client.__add("socket", $socket)
+	$client.__add("info", $info)
+
+	_ArrayAdd($clients, $client)
+	$Server.clients = $clients
+
+	$Server.ClientCount += 1
+
+	Return $client
 EndFunc
 
+#cs
+	_TCPServerGetDisconnect($Server)
+		Usage:
+			To retrive the client that has just been disconnected
 
-Func TCP_Server_Accept($this)
+		Parameters:
+			$Server: Handle to a server, return by _TCPServer() function
 
-	Local $Server = $this.parent
+		Return value:
+			An object that contain client connected information
+				+ $client.socket => client's socket
+				+ $client.info 	 => client name, can be an array, ip address, etc,.. this is upon your choice when using TCPClient() function, which info to send
+				+ $client.msg 	 => this is only matter when you use _TCPServerRecv()
+			For example:
+				$clientDisconnected = _TCPServerAccept($server)
+				If IsObj($clientDisconnected) Then ... (handle the client disconnetion event here)
+#ce
 
-	; accept connection
-	Local $Accept = TCPAccept($Server.listen)
-	If $Accept = -1 Then Return False
+Func _TCPServerGetDisconnect($Server)
+	Local $dis = $Server.clientdisconnected
+	$Server.clientdisconnected = 0
+	Return $dis
+EndFunc
 
-	; get info from connection
-	Local $tTime = TimerInit()
+#cs
+	_TCPServerRecv($Server)
+		Usage:
+			To receive clients message
+
+		Parameters:
+			$Server: Handle to a server, return by _TCPServer() function
+
+		Return value:
+			An object that contain client connected information
+				+ $client.socket => client's socket
+				+ $client.info 	 => can be an array, contain client name, ip address, etc,.. this is upon your choice when using TCPClient() function, which info to send
+				+ $client.msg 	 => can be an array, contain the client's message
+			For example:
+				$recv = _TCPServerRecv($server)
+				If IsObj($recv) Then MsgBox(0, $recv.info, $recv.msg)
+#ce
+
+Func _TCPServerRecv($Server)
+
+	Local $clients = $Server.clients, $recv, $i = $Server.iCursor
+
+	If $i >= UBound($clients) Then $i = 0
+
 	Do
-		Local $Recv = TCPRecv($Accept, $Server.maxLen)
+		If $i = UBound($clients) Then ExitLoop
 
-		If TimerDiff($tTime) > $Server.timeOut Then
-			TCPCloseSocket($Accept)
-			Return print("!	Client doesn't send any info >")
+		$recv = _TCPRecv($clients[$i].socket)
+
+		If $recv = -1 Then
+			$Server.clientdisconnected = $clients[$i]
+			_ArrayDelete($clients, $i)
+			$Server.ClientCount -= 1
+			$i -= 1
 		EndIf
-	Until $Recv <> ""
 
-	; create client
-	Local $Info = __DecodeMsg( $Recv )
-	Local $Client = IDispatch()
+		If $recv <> -1 And ($recv Or IsArray($recv)) Then
 
-	$Client.info = $Info
-	$Client.msg = False
-	$Client.socket = $Accept
-	$Client.maxLen = $Server.maxLen
-	$Client.timeOut = $Server.timeOut
-	$Client.__defineGetter("send", TCP_Client_Send)
-	$Client.__defineGetter("recv", TCP_Client_Recv)
-	$Client.__defineGetter("recvWait", TCP_Client_RecvWait)
-	$Client.__defineGetter("sendFile", TCP_Client_SendFile)
-	Local $index = __ClientAppend($Server, $Client)
+			$Server.clients = $clients
+			$Server.iCursor = $i + 1
 
-	; send verify msg to client
-	$Client.send($c_DAT_VERIFY)
+			$clients[$i].msg = $recv
+			Return $clients[$i]
+		EndIf
 
-	print("-	Client connected index " & $index & " > info = " & __csString($Info))
+		$i += 1
+	Until "me" = "handsome"
 
-	Return $Info
+	$Server.iCursor = 0
+	$Server.clients = $clients
 EndFunc
 
-Func TCP_Server_Recv($this)
+#cs
+	_TCPServerSend($Server)
+		Usage:
+			To send a message to all the clients connected
 
-	Local $Server = $this.parent
+		Parameters:
+			$Server: Handle to a server, return by _TCPServer() function
 
-	Local $isLog = $this.arguments.length >= 1 ? $this.arguments.values[0] : True
+		Return value:
+			No return value, is it even matter ?? :D ????
+#ce
 
-	; recv data from all client
-	Local $IndexReturn[0], $IndexDiss[0], $InfoDiss[0]
-	Local $aClients = $Server.clients
-	For $i = 0 To UBound($aClients) - 1
+Func _TCPServerSend($Server, $data)
 
-		Local $Recv = $aClients[$i].recv()
+	Local $clients = $Server.clients
 
-		; client disconnected
-		If $Recv = -1 Then
-
-			print("-	Client disconnected index " & $i & " > info = " & __csString( $aClients[$i].info ))
-			__ArrayAppend($IndexDiss, $i)
-			__ArrayAppend($InfoDiss, $aClients[$i].info)
-			ContinueLoop
-		EndIf
-
-		If $Recv <> False Then
-
-			__ArrayAppend($IndexReturn, $i)
-			If $isLog Then print("-	Recv Client index " & $i & " > msg = " & __csString( $Recv ))
-		EndIf
-	Next
-
-	If UBound($IndexDiss) > 0 Then
-		__ArrayDelete($aClients, $IndexDiss)
-		$Server.listDis = $InfoDiss
-	EndIf
-
-	$Server.clients = $aClients
-
-	Return UBound($IndexReturn) > 0 ? $IndexReturn : False
-EndFunc
-
-Func TCP_Server_Send($this)
-
-	If $this.arguments.length < 1 Then Return print("!	ERROR > Invalid parameters || $Server.send( $Data )")
-
-	Local $Server = $this.parent
-	Local $Data = $this.arguments.values[0]
-	$Data = __isEncoded($Data) ? $Data : __GetSendData($Data)
-
-	$aClients = $Server.clients
-
-	For $i = 0 To UBound($aClients) - 1
-
-		$aClients[$i].send($Data)
-
+	For $i = 0 To UBound($clients) - 1
+		_TCPSend($clients[$i].socket, $data)
 	Next
 
 EndFunc
 
-Func Client($ip, $port, $Info = False)
+#cs
+	_TCPRecv($socket)
+		Usage:
+			To receive message from a socket
 
-	$Client = IDispatch()
-	$Client.ip = $ip
-	$Client.port = $port
-	$Client.maxLen = 10000000000
-	$Client.timeOut = 10000 ; 10s
-	$Client.socket = TCPConnect($ip, $port)
-	If $Client.socket <= 0 Then Return print("!	ERROR >	Cannot connect to server")
+		Parameters:
+			$socket:
+				+ The return value from _TCPClient() function
+				+ or $client.socket, which is returned from _TCPServerAccept(), or _TCPServerRecv(),... etc
 
-	; connected
-	print("-	Connection started > ip = " & $ip & "; port = " & $port)
+		Return value:
+			Success:
+				The message that received, can be an array
+			Error:
+				-1: $socket is closed, mean lose connection or the client/server has disconnected, in which case of a client, you can try to reconnect
+#ce
 
-	$Client.__defineGetter("send", TCP_Client_Send)
-	$Client.__defineGetter("sendFile", TCP_Client_SendFile)
-	$Client.__defineGetter("recv", TCP_Client_Recv)
-	$Client.__defineGetter("recvWait", TCP_Client_RecvWait)
+Func _TCPRecv($socket)
 
-	; sending info
-	$Client.send( __GetSendData($Info, @IPAddress1) )
+	Local $len = TCPRecv($socket, $iHeadLen), $err = @error
 
-	; waiting for verify from server
-	$Recv = $Client.recvWait()
+	If $err Then Return -1
+	If @extended = 1 Then Return 0
+	$len = Number("0x" & $len)
+	If $len <= 0 Or $len = "" Then Return False
+;~ 	MsgBox(0,"",$len)
+	Local $recv = TCPRecv($socket, $len)
+	$err = @error
+	If $err Then Return -1
+	If @extended = 1 Then Return 0
 
-	If $Recv = - 1 Then
-		TCPCloseSocket($Client.socket)
-		Return print("!	Server doesn't send verification info >")
 
-	ElseIf $Recv = False Then
-		TCPCloseSocket($Client.socket)
-		Return print("!	Cannot connect to server >")
-	EndIf
+	$recv = _TCPDataToArray($recv)
+	If IsArray($recv) And $recv[0] = "/img" Then Return $recv
 
-	If $Recv <> $c_DAT_VERIFY Then
-		TCPCloseSocket($Client.socket)
-		Return print("!	Verification failed, something has happend >")
-	EndIf
-
-	__AllSocketAppend($Client.socket)
-	Return $Client
+	Return _TCPDecode($recv)
 EndFunc
 
-Func TCP_Client_Send($this)
+#cs
+	_TCPSend($socket, $data)
+		Usage:
+			To receive message from a socket
 
-	If $this.arguments.length < 1 Then Return print("!	ERROR > Invalid parameters || $Client.send( $Data )")
+		Parameters:
+			$socket:
+				+ The return value from _TCPClient() function
+				+ or $client.socket, which is returned from _TCPServerAccept(), or _TCPServerRecv(),... etc
+			$data:
+				Data to send, can be an array
 
-	Local $Client = $this.parent
-	Local $Data = $this.arguments.values[0]
-	$Data = __isEncoded($Data) ? $Data : __GetSendData($Data)
+		Return value:
+			Success:
+				The number of bytes sent to the socket
+			Error:
+				0, and set the @error value to non-zero, look in help file of TCPSend to learn more
+#ce
 
-	; send msg to socket
-	If TCPSend($Client.socket, $Data) = 0 Then Return False
-	Return True
+Func _TCPSend($socket, $data)
+
+	$data = _TCPEncode($data)
+
+	If IsArray($data) Then $data = _TCPArrayToData($data)
+
+	Local $len = StringLen($data)
+	Local $send = TCPSend($socket, String(Hex($len, $iHeadLen)) & $data)
+
+	Return $send
 EndFunc
 
-Func TCP_Client_SendFile($this)
+#cs
+	_TCPClient($ip, $port = 80, $info = DriveGetSerial(@HomeDrive & "\"))
+		Usage:
+			To connect to a TCP server
 
-	If $this.arguments.length < 1 Then Return False
-	Local $Client = $this.parent
-	Local $file = $this.arguments.values[0]
+		Parameters:
+			$ip:
+				The IP of the TCP server
+			$port:
+				Port of the TCP server, this port must match between client and server in order to connect
+			$info:
+				The info of this client, name, ip, hwid, etc.. depend on your choice, can be an array
 
-	If FileExists($file) = 0 Then Return False
+		Return value:
+			Success:
+				The socket of the TCP server
+			Error:
+				False, and set the @error value to non-zero, see help file of TCPConnect to learn more
+#ce
 
-	; read file
-	Local $hFile = FileOpen($file, 16)
+Func _TCPClient($ip, $port = 80, $info = DriveGetSerial(@HomeDrive & "\"))
 
-	; img info
-	Local $type = __FileGetType($file)
-	If $type = False Then Return False
+	Local $socket = TCPConnect($ip, $port)
+	Local $err = @error
+	If $err Then Return SetError($err, 0, -1)
 
-	; send info about img
-	Local $Info[2] = [ $c_DAT_FILE, $type ]
-	If $Client.send($Info) = False Then Return print("!	Cannot send info to server >")
-
-	$Recv = $Client.recvWait()
-
-	If $Recv = -2 Then Return print("!	Time out waiting for server")
-	If $Recv = -1 Then Return print("!	Server disconnected", -1)
-	If $Recv = False Then Return print("!	Failed to receive from server")
-
-	If $Recv <> $c_DAT_WAITING Then Return print("!	Server verification failed")
-
-	Local $pos = 0
-	$Client.timeOut = 1000
-	Do
-		FileSetPos($hFile, $pos, 0)
-		Local $Split = FileRead($hFile, $C_TRANSFER_SPLIT)
-
-		TCPSend($Client.socket, $Split)
-		$pos += $C_TRANSFER_SPLIT
-
-		$Recv = $Client.recvWait()
-		$Recv = $Recv
-		If $Recv = -2 Then Return print("!	Time out waiting for image")
-		If $Recv <> $C_TRANSFER_CONTINUE Then Return print("!	Server verification failed")
-
-	Until StringLen($Split) < $C_TRANSFER_SPLIT
-
-	$Client.send($C_TRANSFER_END)
-
-	FileClose($hFile)
-
-	Return print("+	Send file success", True)
+	_TCPSend($socket, $info)
+	Return $socket
 EndFunc
 
-Func TCP_Client_RecvWait($this)
+#cs
+	_TCPEncode($data)
+		internal usage only, no documents.
+#ce
 
-	Local $Client = $this.parent
+Func _TCPEncode($data)
 
-	Local $len = $this.arguments.length >= 1 ? ($this.arguments.values[0] = Default ? $Client.maxLen : $this.arguments.values[0]) : $Client.maxLen
-	Local $isDecode = $this.arguments.length >= 2 ? $this.arguments.values[1] : True
+	If IsArray($data) Then
 
-	Local $tTime = TimerInit()
-	Do
-		$Recv = $Client.recv($len, $isDecode)
-		If TimerDiff($tTime) > $Client.timeOut Then Return -2
-	Until $Recv <> False
+		For $i = 0 To UBound($data) - 1
 
-	Return $Recv
-EndFunc
-
-Func TCP_Client_Recv($this)
-
-	Local $Client = $this.parent
-
-	Local $len = $this.arguments.length >= 1 ? ($this.arguments.values[0] = Default ? $Client.maxLen : $this.arguments.values[0]) : $Client.maxLen
-	Local $isDecode = $this.arguments.length >= 2 ? $this.arguments.values[1] : True
-
-	; recv msg from socket
-	Local $Recv = TCPRecv($Client.socket, $len)
-
-	If @error Then Return -1
-	If $Recv = "" Then Return False
-
-	$Recv = $isDecode ? __DecodeMsg($Recv) : $Recv
-	$Client.type = $c_TYPE_TXT
-
-	; if this is image
-	If UBound($Recv) >= 2 And $Recv[0] = $c_DAT_FILE Then
-		; tell then client to send image
-		$Client.send($c_DAT_WAITING)
-		$Client.timeOut = 1000
-		Local $type = $Recv[1]
-
-		; waiting for image
-		Local $DataImg = "0x"
-		While 1
-
-			$Recv = $Client.recvWait($C_TRANSFER_SPLIT, False)
-			If $Recv = -2 Then Return print("!	Time out waiting for image")
-
-			; if client say end, mean end :)
-			If $Recv = $C_TRANSFER_END Or StringInStr($Recv, "|") Then ExitLoop
-
-			; strim 0x
-			$DataImg &= StringTrimLeft($Recv, 2)
-
-			; tell client to continue transfer
-			$Client.send($C_TRANSFER_CONTINUE)
-		WEnd
-
-		If $type = "png" Or $type = "jpg" Or $type = "jpeg" Then
-			$Client.type = $c_TYPE_IMG
-		Else
-			$Client.type = $c_TYPE_FILE
-		EndIf
-
-		; write img to file
-		Local $fileName = _TempFile($C_DIR_DATA, "img-", $type)
-		Local $hFile = FileOpen( $fileName, 16 + 2)
-		FileWrite($hFile, $DataImg)
-		FileClose($hFile)
-
-		$Client.msg = $fileName
-		Return $fileName
-	EndIf
-
-	$Client.msg = $Recv
-	Return $Recv
-EndFunc
-
-Func CloseTCP()
-
-	print("> TCP shutting down")
-	TCPShutdown()
-
-	print("> Sockets closing")
-	For $i = 0 To UBound($__SOCKET) - 1
-		TCPCloseSocket($__SOCKET[$i])
-	Next
-
-EndFunc
-
-Func __GetSendData($Data, $ip = False)
-
-	If IsArray($Data) Then
-
-		Local $DataReturn = $ip = False ? "" : StringToBinary($ip, 4) & "|"
-		For $iData = 0 To UBound($Data) - 1
-
-			$DataReturn &= StringToBinary($Data[$iData], 4) & "|"
+			$data[$i] = StringToBinary($data[$i], 4)
 		Next
+		Return $data
 
-		Return $DataReturn
-
-	ElseIf $Data = False And $ip Then
-
-		Return StringToBinary($ip, 4)
-
-	ElseIf $ip = False Then
-
-		Return StringToBinary($Data, 4)
 	Else
-		Return  StringToBinary($ip, 4) & "|" & StringToBinary($Data, 4)
+		Return StringToBinary($data, 4)
 	EndIf
-
 EndFunc
 
-Func __DecodeMsg($Data)
+#cs
+	_TCPDecode($data)
+		internal usage only, no documents.
+#ce
 
-	; data is array
-	If StringInStr($Data, "|") Then
+Func _TCPDecode($data)
 
-		If StringRight($Data, 1) = "|" Then $Data = StringTrimRight($Data, 1)
-		$Split = StringSplit($Data, "|", 1)
+	If IsArray($data) Then
 
-		Local $DataReturn[$Split[0]]
+		For $i = 0 To UBound($data) - 1
 
-		For $i = 1 To $Split[0]
-
-			$DataReturn[$i - 1] = BinaryToString($Split[$i], 4)
+			If IsInt(StringLen($data[$i]) / 2) = False Then $data[$i] &= "0"
+			$data[$i] = BinaryToString($data[$i], 4)
 		Next
-		Return $DataReturn
+		Return $data
+
 	Else
-		Return BinaryToString($Data, 4)
-	EndIf
-
-	Return $Data
-EndFunc
-
-Func __csString($Data)
-
-	If IsArray($Data) Then
-		Local $DataReturn = "["
-		For $i = 0 To UBound($Data) - 1
-
-			$DataReturn &= $Data[$i]
-			$DataReturn &= $i = UBound($Data) - 1 ? "" : ", "
-		Next
-		Return $DataReturn & "]"
-	Else
-		Return "[" & $Data & "]"
+		Return BinaryToString($data, 4)
 	EndIf
 EndFunc
 
-Func __isEncoded($Data)
-	If IsArray($Data) Or StringInStr($Data, "|") = False Or StringInStr($Data, "0x") = False Or StringRight($Data, 1) <> "|" Then Return False
-	Return True
-EndFunc
+#cs
+	_TCPArrayToData($data)
+		internal usage only, no documents.
+#ce
 
-Func __AllSocketAppend($Socket)
+Func _TCPArrayToData($array)
+	If IsArray($array) = False Then Return False
 
-	$UBound = UBound($__SOCKET)
-	ReDim $__SOCKET[$UBound + 1]
+	Local $return
 
-	$__SOCKET[$UBound] = $Socket
-EndFunc
-
-Func __ClientAppend($Server, $Client)
-
-	Local $aClients = $Server.clients
-	Local $UBound = UBound($aClients)
-	ReDim $aClients[$UBound + 1]
-
-	$aClients[$UBound] = $Client
-	$Server.clients = $aClients
-	Return $UBound
-EndFunc
-
-Func __ArrayAppend(ByRef $Array, $value)
-
-	Local $UBound = UBound($Array)
-	ReDim $Array[$UBound + 1]
-
-	$Array[$UBound] = $value
-EndFunc
-
-Func __ArrayDelete(ByRef $Array, $aIndex)
-
-	Local $return[ UBound($Array) - UBound($aIndex) ]
-
-	Local $n = 0, $z = 0
-	For $i = 0 To UBound($Array) - 1
-
-		If $n < UBound($aIndex) and $i = $aIndex[$n] Then
-			$n += 1
-			ContinueLoop
-		EndIf
-		$return[$z] = $Array[$i]
-		$z += 1
+	For $x in $array
+		$return &= $x & ";"
 	Next
 
-	$Array = $return
+	Return StringTrimRight($return, 1)
 EndFunc
 
-; copied
-Func __ClearConsole()
-	Local $sCmd = "menucommand:420"
-    Local $Scite_hwnd = WinGetHandle("DirectorExtension")
-    Local $WM_COPYDATA = 74
-    Local $CmdStruct = DllStructCreate('Char[' & StringLen($sCmd) + 1 & ']')
-    DllStructSetData($CmdStruct, 1, $sCmd)
-    Local $COPYDATA = DllStructCreate('Ptr;DWord;Ptr')
-    DllStructSetData($COPYDATA, 1, 1)
-    DllStructSetData($COPYDATA, 2, StringLen($sCmd) + 1)
-    DllStructSetData($COPYDATA, 3, DllStructGetPtr($CmdStruct))
-    DllCall('User32.dll', 'None', 'SendMessage', 'HWnd', $Scite_hwnd, _
-            'Int', $WM_COPYDATA, 'HWnd', 0, _
-            'Ptr', DllStructGetPtr($COPYDATA))
-EndFunc   ;==>SendSciTE_Command
+#cs
+	_TCPDataToArray($data)
+		internal usage only, no documents.
+#ce
 
-Func __FileGetType($str)
+Func _TCPDataToArray($data)
 
-	$Split = StringSplit($str, ".", 1)
+	If StringInStr($data, ";") = 0 Then Return $data
 
-	If $Split[0] < 2 Then Return False
-
-	Return $Split[ $Split[0] ]
-
+	Return StringSplit($data, ";", 2)
 EndFunc
 
-Func print($msg, $return = False)
+; just a trash function, what r u looking here mate?
+Func __log($type, $txt, $return = False)
 
-	ConsoleWrite($msg & @CRLF)
+	Local $head = ">	"
+	Switch $type
+		Case 1
+			$head = "+>	"
+		Case 2
+			$head = "!	"
+	EndSwitch
+	ConsoleWrite($head & $txt & @CRLF)
 	Return $return
 EndFunc
